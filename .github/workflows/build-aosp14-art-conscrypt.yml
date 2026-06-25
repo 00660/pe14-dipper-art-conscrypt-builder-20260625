@@ -1,0 +1,143 @@
+name: Build AOSP14 ART Conscrypt Baseline
+
+on:
+  workflow_dispatch:
+    inputs:
+      manifest_branch:
+        description: AOSP manifest branch/tag to sync.
+        required: true
+        default: android-14.0.0_r22
+      build_jobs:
+        description: Ninja build jobs.
+        required: true
+        default: "2"
+      sync_jobs:
+        description: Repo sync jobs.
+        required: true
+        default: "4"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free runner disk
+        run: |
+          set -euo pipefail
+          df -h
+          sudo rm -rf /usr/local/lib/android /opt/hostedtoolcache /usr/share/dotnet /usr/local/share/boost /usr/local/.ghcup || true
+          sudo docker system prune -af || true
+          df -h
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ca-certificates ccache curl flex g++-multilib \
+            gcc-multilib git git-lfs gnupg gperf imagemagick lib32ncurses5-dev \
+            lib32readline-dev lib32z1-dev libc6-dev-i386 libelf-dev libgl1-mesa-dev \
+            liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev \
+            libxml2 libxml2-utils lzop pngcrush python-is-python3 python3 rsync \
+            schedtool squashfs-tools unzip x11proto-core-dev xsltproc zip zlib1g-dev
+          mkdir -p "$HOME/bin"
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
+          chmod +x "$HOME/bin/repo"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Add swap
+        run: |
+          set -euo pipefail
+          sudo fallocate -l 12G /mnt/aosp-swap || sudo dd if=/dev/zero of=/mnt/aosp-swap bs=1M count=12288
+          sudo chmod 600 /mnt/aosp-swap
+          sudo mkswap /mnt/aosp-swap
+          sudo swapon /mnt/aosp-swap
+          free -h
+          df -h
+
+      - name: Configure mirrors
+        run: |
+          set -euo pipefail
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@users.noreply.github.com"
+          git config --global http.version HTTP/1.1
+          git config --global url.https://mirrors.bfsu.edu.cn/git/AOSP/.insteadOf https://android.googlesource.com/
+
+      - name: Sync AOSP source
+        env:
+          MANIFEST_BRANCH: ${{ inputs.manifest_branch }}
+          SYNC_JOBS: ${{ inputs.sync_jobs }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/aosp"
+          cd "$GITHUB_WORKSPACE/aosp"
+          repo init -u https://android.googlesource.com/platform/manifest \
+            -b "$MANIFEST_BRANCH" --depth=1 --partial-clone --clone-filter=blob:none
+          repo sync -c --no-tags --no-clone-bundle --optimized-fetch --prune \
+            --fail-fast --retry-fetches=5 --jobs-network=4 -j"$SYNC_JOBS"
+          repo manifest -r > "$GITHUB_WORKSPACE/resolved-manifest.xml"
+          df -h
+
+      - name: Build ART and Conscrypt modules
+        env:
+          BUILD_JOBS: ${{ inputs.build_jobs }}
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/aosp"
+          export GOMEMLIMIT=2600MiB
+          export GOGC=20
+          export GOMAXPROCS=2
+          set +u
+          source build/envsetup.sh
+          lunch module_arm64-userdebug
+          set -u
+          {
+            echo "TARGET_PRODUCT=$(get_build_var TARGET_PRODUCT)"
+            echo "TARGET_BUILD_VARIANT=$(get_build_var TARGET_BUILD_VARIANT)"
+            echo "PLATFORM_VERSION=$(get_build_var PLATFORM_VERSION)"
+            echo "BUILD_ID=$(get_build_var BUILD_ID)"
+            echo "PRODUCT_OUT=$(get_build_var PRODUCT_OUT)"
+            echo "BUILD_TARGETS=com.android.art com.android.conscrypt"
+            echo "BUILD_JOBS=$BUILD_JOBS"
+            echo "GOMEMLIMIT=$GOMEMLIMIT"
+            echo "GOGC=$GOGC"
+            echo "GOMAXPROCS=$GOMAXPROCS"
+          } > "$GITHUB_WORKSPACE/build.env"
+          build/soong/soong_ui.bash --make-mode --skip-soong-tests -j"$BUILD_JOBS" \
+            com.android.art com.android.conscrypt
+
+      - name: Collect artifacts
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/artifacts"
+          if [ -d "$GITHUB_WORKSPACE/aosp/out" ]; then
+            find "$GITHUB_WORKSPACE/aosp/out" -type f \( \
+              -name 'com.android.art*.apex' -o \
+              -name 'com.android.runtime*.apex' -o \
+              -name 'com.android.conscrypt*.apex' \) | sort > "$GITHUB_WORKSPACE/artifacts/apex-files.txt"
+            while IFS= read -r f; do
+              [ -s "$f" ] || continue
+              cp -f "$f" "$GITHUB_WORKSPACE/artifacts/$(basename "$f")"
+            done < "$GITHUB_WORKSPACE/artifacts/apex-files.txt"
+          fi
+          cp -f "$GITHUB_WORKSPACE/build.env" "$GITHUB_WORKSPACE/artifacts/" 2>/dev/null || true
+          cp -f "$GITHUB_WORKSPACE/resolved-manifest.xml" "$GITHUB_WORKSPACE/artifacts/" 2>/dev/null || true
+          find "$GITHUB_WORKSPACE/artifacts" -maxdepth 1 -type f -print0 | xargs -0 -r sha256sum > "$GITHUB_WORKSPACE/artifacts/SHA256SUMS"
+          find "$GITHUB_WORKSPACE/artifacts" -maxdepth 1 -type f -printf '%f %s bytes\n' | sort > "$GITHUB_WORKSPACE/artifacts/FILES.txt"
+          cat "$GITHUB_WORKSPACE/artifacts/FILES.txt"
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aosp14-art-conscrypt-baseline
+          retention-days: 7
+          path: artifacts/
+          if-no-files-found: error
