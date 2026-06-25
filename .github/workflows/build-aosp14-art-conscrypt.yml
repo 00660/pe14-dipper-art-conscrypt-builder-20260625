@@ -1,12 +1,16 @@
-name: Build AOSP14 ART Conscrypt Modules
+name: Build PE14 ART Conscrypt Modules
 
 on:
   workflow_dispatch:
     inputs:
-      manifest_branch:
-        description: AOSP manifest branch/tag to sync.
+      manifest_url:
+        description: Android manifest repository to sync.
         required: true
-        default: android-14.0.0_r22
+        default: https://github.com/PixelExperience/manifest
+      manifest_branch:
+        description: Android manifest branch/tag to sync.
+        required: true
+        default: fourteen
       build_jobs:
         description: Ninja build jobs.
         required: true
@@ -68,16 +72,18 @@ jobs:
           git config --global user.email "github-actions@users.noreply.github.com"
           git config --global http.version HTTP/1.1
           git config --global url.https://mirrors.bfsu.edu.cn/git/AOSP/.insteadOf https://android.googlesource.com/
+          git config --global url.https://ghproxy.net/https://github.com/.insteadOf https://github.com/
 
-      - name: Sync AOSP source
+      - name: Sync Android source
         env:
+          MANIFEST_URL: ${{ inputs.manifest_url }}
           MANIFEST_BRANCH: ${{ inputs.manifest_branch }}
           SYNC_JOBS: ${{ inputs.sync_jobs }}
         run: |
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/aosp"
           cd "$GITHUB_WORKSPACE/aosp"
-          repo init -u https://android.googlesource.com/platform/manifest \
+          repo init -u "$MANIFEST_URL" \
             -b "$MANIFEST_BRANCH" --depth=1 --partial-clone --clone-filter=blob:none
           repo sync -c --no-tags --no-clone-bundle --optimized-fetch --prune \
             --fail-fast --retry-fetches=5 --jobs-network=4 -j"$SYNC_JOBS"
@@ -104,6 +110,7 @@ jobs:
             echo "BUILD_ID=$(get_build_var BUILD_ID)"
             echo "PRODUCT_OUT=$(get_build_var PRODUCT_OUT)"
             echo "BUILD_TARGETS=com.android.art com.android.conscrypt"
+            echo "MANIFEST_URL=${{ inputs.manifest_url }}"
             echo "BUILD_JOBS=$BUILD_JOBS"
             echo "GOMEMLIMIT=$GOMEMLIMIT"
             echo "GOGC=$GOGC"
