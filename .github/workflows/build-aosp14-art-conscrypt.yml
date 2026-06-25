@@ -1,4 +1,4 @@
-name: Build AOSP14 ART Conscrypt Baseline
+name: Build AOSP14 ART Conscrypt Modules
 
 on:
   workflow_dispatch:
