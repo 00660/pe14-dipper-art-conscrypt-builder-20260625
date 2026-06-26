@@ -85,6 +85,17 @@ jobs:
           cd "$GITHUB_WORKSPACE/aosp"
           repo init -u "$MANIFEST_URL" \
             -b "$MANIFEST_BRANCH" --depth=1 --partial-clone --clone-filter=blob:none
+          mkdir -p .repo/local_manifests
+          cat > .repo/local_manifests/pe14-module-prune.xml <<'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <manifest>
+            <remove-project name="external_faceunlock" />
+            <remove-project name="external_cronet" />
+            <remove-project name="external_icu" />
+            <remove-project name="vendor_gms" />
+            <project path="external/icu" name="platform/external/icu" remote="aosp" revision="refs/tags/android-14.0.0_r22" groups="pdk" />
+          </manifest>
+          EOF
           repo sync -c --no-tags --no-clone-bundle --optimized-fetch --prune \
             --fail-fast --retry-fetches=5 --jobs-network=4 -j"$SYNC_JOBS"
           repo manifest -r > "$GITHUB_WORKSPACE/resolved-manifest.xml"
@@ -144,7 +155,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: aosp14-art-conscrypt-baseline
+          name: pe14-art-conscrypt-modules
           retention-days: 7
           path: artifacts/
           if-no-files-found: error
